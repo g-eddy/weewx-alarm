@@ -181,7 +181,7 @@ class AlarmSvc(StdService):
                  f" {len(self.alarms)} alarms"
                  f", {alarm_defs_count - len(self.alarms)} skipped)")
 
-    staticmethod
+    @staticmethod
     def owner_emailaddr():
         """return email address of owner of this weewx instance"""
         return getpass.getuser()    # don't bother with '@server'
