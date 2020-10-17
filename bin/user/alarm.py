@@ -6,6 +6,7 @@ alarm module provides weewx service that detects and acts upon alarm conditions
 AlarmSvc: weewx service for alarms. at present, email is the only action taken
 """
 
+import ast
 import configobj
 import getpass
 import smtplib
@@ -19,7 +20,7 @@ from weewx.engine import StdService
 from weeutil.weeutil import timestamp_to_string, to_int
 
 log = logging.getLogger(__name__)
-version = "4.0.1"
+version = "4.0.2b"
 
 
 class AlarmSvc(StdService):
@@ -331,6 +332,7 @@ class Alarm:
                 recipients = ','.join(recipients)
             subject = (params['prefix'] + params['subject']).format_map(context)
             body = params['body'].format_map(context)
+            body = ast.literal_eval(f"'{body}'")    # eval escape sequences
             if weewx.debug > 1:
                 log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
                           f" subject='{subject}' body='{body}'")
