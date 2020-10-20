@@ -48,6 +48,8 @@ class AlarmSvc(StdService):
         sender          apparent email sender (default: user owner of weewx)
         recipients      default list of notification email recipients
                         (default: none)
+        text_set        value representing SET state (default: "SET")
+        text_clear      value representing CLEAR state (default: "CLR")
         subject         default notification email subject line, as a format
                         string evaluated in the context of the packet
                         converted to the specified unit system - it supports
@@ -55,13 +57,17 @@ class AlarmSvc(StdService):
                         special variables are defined:
                             _NAME   alarm name
                             _RULE   rule (python expression) performed
+                            _STATE  set or cleared value - see {state_set} and
+                                    {set_clear} for allowed values
                             _TIME   timestamp of packet
-                        (default: '{_NAME}' - see prefix)
-        prefix          default prefix to all subject lines, a format string
-                        (default: "Alarm: " - see subject)
+                        (default: '{_NAME}')
+        subject_prefix  default prefix to all subject lines, a format string
+                        (default: "Alarm [{_STATE}] " - see {subject})
         body            default body of email notification, a format string
-                        same as for 'subject' (default:
-                        'Alarm: {_NAME}\\nRule: {_RULE}\\nTime: {_TIME}\\n')
+                        same as for {subject} (default:
+                        'Alarm:\t{_NAME}\nState:\t{_STATE}\nRule:\t{_RULE}\nTime:\{_TIME}\n')
+        body_prefix     default prefix to all email bodies, a format string
+                        (default: "" - see {subject})
 
         # alarm definition - many can be defined
         [[_alarm_name_]]
@@ -71,19 +77,23 @@ class AlarmSvc(StdService):
                         unit_system, so can include data_types, literals and
                         _builtins_ functions
             # on transition from false to true
-            [[[on_true]]]
-                recipients  overrides default email list if present
-                subject     overrides default subject if present
-                prefix      overrides default prefix if present
-                body        overrides default body of present. very useful
+            [[[on_set]]]
+                recipients  overrides default {recipients} if present
+                text_set    overrides {text_set} if present
+                text_clear  overrides {text_clear} if present
+                subject     overrides default {subject} if present
+                subject_prefix
+                            overrides default {subject_prefix} if present
+                body        overrides default {body} if present. very useful
                             for including specific data_type values in format
                             string
             # on transition from true to false
-            [[[on_false]]]
+            [[[on_clear]]]
                 recipients
                 subject
-                prefix
+                subject_prefix
                 body
+                body_prefix
 
     example of configuration via weewx.conf:
     [Alarms]
@@ -94,33 +104,35 @@ class AlarmSvc(StdService):
         sender = "Wx Name <your_account@your_isp.au>"
         recipients = "Your Name <your_account@your_isp.com>", "Foo <bar@isp.com>"
         #subject = "{_NAME}"
-        prefix = "!! "
-        #body = "Alarm: {_NAME}\\nTest: {_TEST}\\nTime: {_TIME}\\n"
+        #subject_prefix = "Alarm [{_STATE}] "
+        subject_prefix = "!{_STATE}! "
+        #body_prefix = "Alarm:\{_NAME}\nState:\t{_STATE}\nTest:\t{_TEST}\nTime: {_TIME}\n"
+        #body = ""
         [[Hot]]
             rule = "outTemp >= 30.0"    # 30 C
-            [[[on_true]]]
-                #recipients = default_to_Alarm.mail_to
-                #subject = default_to_Alarm.mail_subject
-                body = "Alarm: {_NAME}\\noutTemp: {outTemp}\\nTime: {_TIME}\\n"
+            [[[on_set]]]
+                #recipients = _default_to_Alarm.recipients_
+                #subject = _default_to_Alarm.subject
+                body = "outTemp:\t{outTemp}\n"
         [[Very Hot]]
             rule = "outTemp >= 37.8"    # 100 F
-            [[[on_true]]]
-                body = "Alarm: {_NAME}\\noutTemp: {outTemp}\\nTime: {_TIME}\\n"
+            [[[on_set]]]
+                body = "outTemp: {outTemp}\n"
         [[Freezing]]
-            rule = "outTemp >= 0.0"     # 0 C
-            [[[on_false]]]
-                prefix = ""
+            rule = "outTemp <= 0.0"     # 0 C
+            [[[on_set]]]
+                subject_prefix = ""
                 subject = "Brrrr! {_NAME}"
-                body = "Alarm: {_NAME}\\noutTemp: {outTemp}\\nTime: {_TIME}\\n"
+                body = "outTemp:\t{outTemp}\n"
         [[River Temp Battery LOW]]
             rule = "int(txBatteryStatus) & 0x02"    # bit#1 of mask set
-            [[[on_true]]]
+            [[[on_set]]]
                 recipients = "Your Name <your_account@your_isp.com>", "Batteries <hardware@shop.com"
-                prefix = "Order: "
-                body = "Please provide 4xAAA batteries\\n"
-            [[[on_false]]]
+                subject_prefix = "Order: "
+                body_prefix = "Please provide 4xAAA batteries\n"
+            [[[on_clear]]]
                 subject = "River Temp Battery okay"
-                body = "Alarm: {_NAME}: CLEARED\\n"
+                #body = "Alarm: {_NAME}: CLEARED\\n"
     """
 
     def __init__(self, engine, config_dict):
@@ -148,12 +160,15 @@ class AlarmSvc(StdService):
         mailer = Mailer(server, user, password, sender)
 
         # on_... sub-section defaults
-        on_defaults = {}
-        key='recipients'; on_defaults[key] = mgr_sect.get(key, [])
-        key='prefix'; on_defaults[key] = mgr_sect.get(key, 'Alarm: ')
-        key='subject'; on_defaults[key] = mgr_sect.get(key, '{_NAME}')
-        key='body'; on_defaults[key] = mgr_sect.get(key,
-                            'Alarm: {_NAME}\nTest: {_TEST}\nTime: {_TIME}\n')
+        on_defaults = dict()
+        key='recipients'; on_defaults[key] = mgr_sect.get(key, list())
+        key='text_set'; on_defaults[key] = mgr_sect.get(key, "SET")
+        key='text_clear'; on_defaults[key] = mgr_sect.get(key, "CLR")
+        key='subject_prefix'; on_defaults[key] = mgr_sect.get(key, "Alarm [{_STATE}] ")
+        key='subject'; on_defaults[key] = mgr_sect.get(key, "{_NAME}")
+        key='body_prefix'; on_defaults[key] = mgr_sect.get(key,
+                            "Alarm:\t{_NAME}\nState:\t{_STATE}\nTest:\t{_TEST}\nTime:\t{_TIME}\n")
+        key='body'; on_defaults[key] = mgr_sect.get(key, "")
 
         # create alarm definitions.
         # there is no particular relationship between or sequence of alarms
@@ -197,9 +212,9 @@ class AlarmSvc(StdService):
             return None
 
         # on_... sub-sections
-        sect = alarm_sect.get('on_true', None)
+        sect = alarm_sect.get('on_set', None)
         on_true_params = self.parse_on_sect(sect, defaults) if sect else None
-        sect = alarm_sect.get('on_false', None)
+        sect = alarm_sect.get('on_clear', None)
         on_false_params = self.parse_on_sect(sect, defaults) if sect else None
 
         return Alarm(name, rule, on_true_params, on_false_params, mailer)
@@ -297,6 +312,7 @@ class Alarm:
         try:
             # evaluate rule in context of converted packet values plus the
             # special variables (_NAME, _RULE, _TIME)
+            # note: special variable _STATE not known until after this eval
             # warning: this can throw just about any exception...
             context = {**packet_cvt,
                    **{'_NAME': self.name, '_RULE': self.rule,
@@ -327,11 +343,12 @@ class Alarm:
 
             # assemble the notification
             # warning: these can throw just about any exceptions
+            context['_STATE'] = params['text_set'] if new_state else params['text_clear']
             recipients = params['recipients']
             if isinstance(recipients, list):
                 recipients = ','.join(recipients)
-            subject = (params['prefix'] + params['subject']).format_map(context)
-            body = params['body'].format_map(context)
+            subject = (params['subject_prefix'] + params['subject']).format_map(context)
+            body = (params['body_prefix'] + params['body']).format_map(context)
             body = ast.literal_eval(f"'{body}'")    # eval escape sequences
             if weewx.debug > 1:
                 log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
