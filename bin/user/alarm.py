@@ -106,7 +106,7 @@ class AlarmSvc(StdService):
         #subject = "{_NAME}"
         #subject_prefix = "Alarm [{_STATE}] "
         subject_prefix = "!{_STATE}! "
-        #body_prefix = "Alarm:\{_NAME}\nState:\t{_STATE}\nTest:\t{_TEST}\nTime: {_TIME}\n"
+        #body_prefix = "Alarm:\{_NAME}\nState:\t{_STATE}\nTest:\t{_RULE}\nTime: {_TIME}\n"
         #body = ""
         [[Hot]]
             rule = "outTemp >= 30.0"    # 30 C
@@ -167,7 +167,7 @@ class AlarmSvc(StdService):
         key='subject_prefix'; on_defaults[key] = mgr_sect.get(key, "Alarm [{_STATE}] ")
         key='subject'; on_defaults[key] = mgr_sect.get(key, "{_NAME}")
         key='body_prefix'; on_defaults[key] = mgr_sect.get(key,
-                            "Alarm:\t{_NAME}\nState:\t{_STATE}\nTest:\t{_TEST}\nTime:\t{_TIME}\n")
+                            "Alarm:\t{_NAME}\nState:\t{_STATE}\nTest:\t{_RULE}\nTime:\t{_TIME}\n")
         key='body'; on_defaults[key] = mgr_sect.get(key, "")
 
         # create alarm definitions.
@@ -314,6 +314,7 @@ class Alarm:
             # special variables (_NAME, _RULE, _TIME)
             # note: special variable _STATE not known until after this eval
             # warning: this can throw just about any exception...
+            stage = "rule"
             context = {**packet_cvt,
                    **{'_NAME': self.name, '_RULE': self.rule,
                       '_TIME': Alarm.epoch_to_string(packet_cvt['dateTime'])}}
@@ -343,40 +344,49 @@ class Alarm:
 
             # assemble the notification
             # warning: these can throw just about any exceptions
+            stage = "recipients"
             context['_STATE'] = params['text_set'] if new_state else params['text_clear']
             recipients = params['recipients']
             if isinstance(recipients, list):
                 recipients = ','.join(recipients)
+            stage = "subject"
             subject = (params['subject_prefix'] + params['subject']).format_map(context)
+            stage = "body"
             body = (params['body_prefix'] + params['body']).format_map(context)
-            body = ast.literal_eval(f"'{body}'")    # eval escape sequences
+            if weewx.debug > 1:
+                log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
+                          f" body(before ast)='{body}'")
+            body = ast.literal_eval(body)       # eval escape sequences
             if weewx.debug > 1:
                 log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
                           f" subject='{subject}' body='{body}'")
 
-            # email the message
-            t = threading.Thread(target=self.mailer.send,
-                                 args=(recipients, subject, body))
-            t.start()
         except NameError as e:
             # common mistake - referenced variable not in packet
             # so log something if debug set
             if weewx.debug > 0:
                 log.debug(f"{self.__class__.__name__} [{self.name}]"
-                          f" {e.args[0]}")
-        except (ValueError, TypeError) as e:
+                          f" {stage}: {e.args[0]}")
+        except (ValueError, TypeError, KeyError) as e:
             # common mistake - bad use of a variable in packet
             # so log an error as this really shouldn't be allowed to happen
             log.warning(f"{self.__class__.__name__} [{self.name}]"
-                        f" {e.args[0]}")
-        #except threading.ThreadError as e:
-        #    log.warning(f"{self.__class__.__name__} [{self.name}]"
-        #                f" emailer thread failed: {e.args[0]}")
+                        f" {stage}: {e.args[0]}")
         except Exception as e:
             # other errors shouldn't happen
-            log.warning(f"{self.__class__.__name__} [{self.name}]"
-                        f" packet_cvt={packet_cvt}",
+            log.warning(f"{self.__class__.__name__} [{self.name}] {stage}",
                         exc_info=e)
+        else:
+            #try:
+            #   # email the message
+            #   t = threading.Thread(target=self.mailer.send,
+            #                        args=(recipients, subject, body))
+            #   t.start()
+            #except threading.ThreadError as e:
+            #    log.warning(f"{self.__class__.__name__} [{self.name}]"
+            #                f" emailer thread failed: {e.args[0]}")
+            # email the message in foreground
+            self.mailer.send(recipients, subject, body)
 
 
 class Mailer:
