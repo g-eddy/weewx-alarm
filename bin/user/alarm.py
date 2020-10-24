@@ -58,14 +58,15 @@ class AlarmSvc(StdService):
                             _NAME   alarm name
                             _RULE   rule (python expression) performed
                             _STATE  set or cleared value - see {state_set} and
-                                    {set_clear} for allowed values
+                                    {state_clear} for allowed values
                             _TIME   timestamp of packet
                         (default: '{_NAME}')
         subject_prefix  default prefix to all subject lines, a format string
                         (default: "Alarm [{_STATE}] " - see {subject})
         body            default body of email notification, a format string
                         same as for {subject} (default:
-                        'Alarm:\t{_NAME}\nState:\t{_STATE}\nRule:\t{_RULE}\nTime:\{_TIME}\n')
+                        'Alarm:\t{_NAME}\nState:\t{_STATE}\nRule:\t{_RULE}\n'+
+                        'Time:\t{_TIME}\n')
         body_prefix     default prefix to all email bodies, a format string
                         (default: "" - see {subject})
 
@@ -79,14 +80,15 @@ class AlarmSvc(StdService):
             # on transition from false to true
             [[[on_set]]]
                 recipients  overrides default {recipients} if present
-                text_set    overrides {text_set} if present
-                text_clear  overrides {text_clear} if present
+                text_set    overrides default {text_set} if present
+                text_clear  overrides default {text_clear} if present
                 subject     overrides default {subject} if present
                 subject_prefix
                             overrides default {subject_prefix} if present
                 body        overrides default {body} if present. very useful
                             for including specific data_type values in format
                             string
+                body_prefix overrides default {body_prefix} if present
             # on transition from true to false
             [[[on_clear]]]
                 recipients
@@ -106,18 +108,19 @@ class AlarmSvc(StdService):
         #subject = "{_NAME}"
         #subject_prefix = "Alarm [{_STATE}] "
         subject_prefix = "!{_STATE}! "
-        #body_prefix = "Alarm:\{_NAME}\nState:\t{_STATE}\nTest:\t{_RULE}\nTime: {_TIME}\n"
+        #body_prefix = "Alarm:\t{_NAME}\nState:\t{_STATE}\nTest:\t{_RULE}\n"+
+        #              "Time:\t{_TIME}\n"
         #body = ""
         [[Hot]]
             rule = "outTemp >= 30.0"    # 30 C
             [[[on_set]]]
                 #recipients = _default_to_Alarm.recipients_
-                #subject = _default_to_Alarm.subject
+                #subject = _default_to_Alarm.subject_
                 body = "outTemp:\t{outTemp}\n"
         [[Very Hot]]
             rule = "outTemp >= 37.8"    # 100 F
             [[[on_set]]]
-                body = "outTemp: {outTemp}\n"
+                body = "outTemp:\t{outTemp}\n"
         [[Freezing]]
             rule = "outTemp <= 0.0"     # 0 C
             [[[on_set]]]
@@ -127,12 +130,13 @@ class AlarmSvc(StdService):
         [[River Temp Battery LOW]]
             rule = "int(txBatteryStatus) & 0x02"    # bit#1 of mask set
             [[[on_set]]]
-                recipients = "Your Name <your_account@your_isp.com>", "Batteries <hardware@shop.com"
+                recipients = "Your Name <your_account@your_isp.com>",\
+                             "Batteries <hardware@shop.com"
                 subject_prefix = "Order: "
                 body_prefix = "Please provide 4xAAA batteries\n"
             [[[on_clear]]]
                 subject = "River Temp Battery okay"
-                #body = "Alarm: {_NAME}: CLEARED\\n"
+                #body = "Alarm: {_NAME}: CLEARED\n"
     """
 
     def __init__(self, engine, config_dict):
@@ -159,16 +163,19 @@ class AlarmSvc(StdService):
         sender = mgr_sect.get('sender', AlarmSvc.owner_emailaddr())
         mailer = Mailer(server, user, password, sender)
 
-        # on_... sub-section defaults
+        # on_... sub-section defaults.
+        # all default strings non-literal i.e. need to be ast.literal_eval'ed
         on_defaults = dict()
         key='recipients'; on_defaults[key] = mgr_sect.get(key, list())
         key='text_set'; on_defaults[key] = mgr_sect.get(key, "SET")
         key='text_clear'; on_defaults[key] = mgr_sect.get(key, "CLR")
-        key='subject_prefix'; on_defaults[key] = mgr_sect.get(key, "Alarm [{_STATE}] ")
-        key='subject'; on_defaults[key] = mgr_sect.get(key, "{_NAME}")
+        key='subject_prefix'; on_defaults[key] = mgr_sect.get(key,
+                                    r"Alarm [{_STATE}] ")
+        key='subject'; on_defaults[key] = mgr_sect.get(key, r"{_NAME}")
         key='body_prefix'; on_defaults[key] = mgr_sect.get(key,
-                            "Alarm:\t{_NAME}\nState:\t{_STATE}\nTest:\t{_RULE}\nTime:\t{_TIME}\n")
-        key='body'; on_defaults[key] = mgr_sect.get(key, "")
+                                    r"Alarm:\t{_NAME}\nState:\t{_STATE}\n"
+                                    r"Test:\t{_RULE}\nTime:\t{_TIME}\n")
+        key='body'; on_defaults[key] = mgr_sect.get(key, r"")
 
         # create alarm definitions.
         # there is no particular relationship between or sequence of alarms
@@ -205,6 +212,10 @@ class AlarmSvc(StdService):
     def parse_alarm(self, name, alarm_sect, defaults, mailer):
         """parse an alarm definition, returning Alarm instance or None"""
 
+        if weewx.debug > 2:
+            log.debug(f"{self.__class__.__name__}.parse_alarm"
+                      f" name='{name}' alarm_sect='{alarm_sect}'")
+
         # rule
         rule = alarm_sect.get('rule', None)
         if not rule:
@@ -213,9 +224,11 @@ class AlarmSvc(StdService):
 
         # on_... sub-sections
         sect = alarm_sect.get('on_set', None)
-        on_true_params = self.parse_on_sect(sect, defaults) if sect else None
+        on_true_params = self.parse_on_sect(sect, defaults) \
+                         if sect is not None else defaults
         sect = alarm_sect.get('on_clear', None)
-        on_false_params = self.parse_on_sect(sect, defaults) if sect else None
+        on_false_params = self.parse_on_sect(sect, defaults) \
+                          if sect is not None else defaults
 
         return Alarm(name, rule, on_true_params, on_false_params, mailer)
 
@@ -309,84 +322,140 @@ class Alarm:
         """assess alarm by evaluating its rule and triggering if its state has
            changed. if triggered, it performs associated action, if any"""
 
-        try:
-            # evaluate rule in context of converted packet values plus the
-            # special variables (_NAME, _RULE, _TIME)
-            # note: special variable _STATE not known until after this eval
-            # warning: this can throw just about any exception...
-            stage = "rule"
-            context = {**packet_cvt,
+        # create evaluation context based on packet values plus the special
+        # variables (_NAME, _RULE, _TIME).
+        # note: special variable _STATE not known until rile has been eval'ed
+        context = {**packet_cvt,
                    **{'_NAME': self.name, '_RULE': self.rule,
                       '_TIME': Alarm.epoch_to_string(packet_cvt['dateTime'])}}
+        if weewx.debug > 2:
+            log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
+                      f" context={context}")
+
+        # evaluate rule
+        new_state = self.eval_rule(context)
+        if new_state is None:
+            return
+
+        # have we changed state?
+        params = None
+        if self.state is not None and new_state != self.state:
+            # yes -> triggered. but which way?
+            params = self.on_true_params if new_state else self.on_false_params
+        self.state = new_state
+
+        # do we have work to do?
+        if weewx.debug > 1:
+            log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
+                      f" params={params}")
+        if not params:
+            return          # finished - no email
+
+        # start assembling the notification
+        context['_STATE'] = params['text_set'] if new_state else \
+                            params['text_clear']
+
+        # recipients
+        raw = params['recipients']
+        if isinstance(raw, list):
+            raw = ','.join(raw)
+        recipients = self.eval_string(raw, {})
+        if not recipients:
+            log.warning(f"{self.__class__.__name__}.assess: [{self.name}]"
+                        f" no recipients raw='{raw}'")
+            return          # finished - no email
+
+        # subject
+        raw = params['subject_prefix'] + params['subject']
+        subject = self.eval_string(raw, context)
+        if subject is None:
+            # fallback subject if garbled
+            subject = f"{self.name} [{context['_STATE']}] *garbled* raw='{raw}'"
+
+        # body
+        raw = params['body_prefix'] + params['body']
+        body = self.eval_string(raw, context)
+        if body is None:
+            # fallback body if garbled
+            body = f"*garbled* raw='{raw}'"
+
+        # send email
+        if weewx.debug > 1:
+            log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
+                      f" recipients='{recipients}'"
+                      f" subject='{subject}' body='{body}'")
+        self.mailer.send(recipients, subject, body)
+
+    def eval_rule(self, context):
+        """evaluate rule. returns new state, or None if error"""
+
+        new_state = None
+        try:
             if weewx.debug > 1:
-                log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
-                          f" eval({self.rule})")
+                log.debug(f"{self.__class__.__name__}.eval_rule [{self.name}]"
+                          f" rule='{self.rule}'")
             new_state = eval(self.rule, {}, context)
             if weewx.debug > 1:
-                log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
-                          f" new_state={new_state} old state={self.state}"
-                          f" change?={new_state != self.state}")
-
-            # have we changed state?
-            params = None
-            if self.state is not None and new_state != self.state:
-                # yes -> triggered. but which way?
-                params = self.on_true_params if new_state else \
-                         self.on_false_params
-            self.state = new_state
-
-            # do we have work to do?
-            if weewx.debug > 1:
-                log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
-                          f" params={params}")
-            if not params:
-                return
-
-            # assemble the notification
-            # warning: these can throw just about any exceptions
-            stage = "recipients"
-            context['_STATE'] = params['text_set'] if new_state else params['text_clear']
-            recipients = params['recipients']
-            if isinstance(recipients, list):
-                recipients = ','.join(recipients)
-            stage = "subject"
-            subject = (params['subject_prefix'] + params['subject']).format_map(context)
-            stage = "body"
-            body = (params['body_prefix'] + params['body']).format_map(context)
-            if weewx.debug > 1:
-                log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
-                          f" body(before ast)='{body}'")
-            body = ast.literal_eval(body)       # eval escape sequences
-            if weewx.debug > 1:
-                log.debug(f"{self.__class__.__name__}.assess: [{self.name}]"
-                          f" subject='{subject}' body='{body}'")
+                log.debug(f"{self.__class__.__name__}.eval_rule [{self.name}]"
+                          f" state={new_state}"
+                          f" change?={self.state != new_state}")
 
         except NameError as e:
             # common mistake - referenced variable not in packet
-            # so log something if debug set
+            # so log something only if debug set
             if weewx.debug > 0:
                 log.debug(f"{self.__class__.__name__} [{self.name}]"
-                          f" {stage}: {e.args[0]}")
+                          f" rule: {e.args[0]}")
         except (ValueError, TypeError, KeyError) as e:
             # common mistake - bad use of a variable in packet
             # so log an error as this really shouldn't be allowed to happen
             log.warning(f"{self.__class__.__name__} [{self.name}]"
-                        f" {stage}: {e.args[0]}")
+                        f" rule: {e.args[0]}")
         except Exception as e:
             # other errors shouldn't happen
-            log.warning(f"{self.__class__.__name__} [{self.name}] {stage}",
+            log.warning(f"{self.__class__.__name__} [{self.name}] rule: oops",
                         exc_info=e)
-        else:
-            #try:
-            #   # email the message
-            #   t = threading.Thread(target=self.mailer.send,
-            #                        args=(recipients, subject, body))
-            #   t.start()
-            #except threading.ThreadError as e:
-            #    log.warning(f"{self.__class__.__name__} [{self.name}]"
-            #                f" emailer thread failed: {e.args[0]}")
-            # email the message in foreground
-            self.mailer.send(recipients, subject, body)
+
+        return new_state
+
+    def eval_string(self, raw, context):
+        """evaluate raw string i.e. substitute variables and ast.literal_eval"""
+
+        cooked = None
+        try:
+            if weewx.debug > 2:
+                log.debug(f"{self.__class__.__name__}.eval_string:"
+                          f" [{self.name}] raw='{raw}'")
+
+            # substitute variables
+            cooked = raw.format_map(context)
+            if weewx.debug > 2:
+                log.debug(f"{self.__class__.__name__}.eval_string:"
+                          f" [{self.name}] substituted cooked='{cooked}'")
+
+            # literal_eval
+            cooked = ast.literal_eval("'" + cooked + "'")
+            if weewx.debug > 2:
+                log.debug(f"{self.__class__.__name__}.eval_string:"
+                          f" [{self.name}] final cooked='{cooked}'")
+
+        except NameError as e:
+            # common mistake - referenced variable not in packet
+            # so log something only if debug set
+            if weewx.debug > 0:
+                log.debug(f"{self.__class__.__name__} [{self.name}]"
+                          f" {e.args[0]}")
+        except (ValueError, TypeError, KeyError) as e:
+            # common mistake - bad use of a variable in packet
+            # so log an error as this really shouldn't be allowed to happen
+            log.warning(f"{self.__class__.__name__} [{self.name}]"
+                        f" {e.args[0]}")
+        except Exception as e:
+            # other errors shouldn't happen
+            log.warning(f"{self.__class__.__name__} [{self.name}] oops",
+                        exc_info=e)
+
+        return cooked
 
 
 class Mailer:
