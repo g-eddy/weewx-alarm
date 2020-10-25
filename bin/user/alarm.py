@@ -120,7 +120,6 @@ class AlarmSvc(StdService):
         [[Very Hot]]
             rule = "outTemp >= 37.8"    # 100 F
             [[[on_set]]]
-                body = "outTemp:\t{outTemp}\n"
         [[Freezing]]
             rule = "outTemp <= 0.0"     # 0 C
             [[[on_set]]]
@@ -200,9 +199,9 @@ class AlarmSvc(StdService):
 
         # start listening to new ARCHIVE packets
         self.bind(weewx.NEW_ARCHIVE_RECORD, self.new_archive_record)
-        log.info(f"{self.__class__.__name__} started (version {version}):"
+        log.info(f"{self.__class__.__name__}: started (version {version}):"
                  f" {len(self.alarms)} alarms"
-                 f", {alarm_defs_count - len(self.alarms)} skipped)")
+                 f", {alarm_defs_count - len(self.alarms)} skipped")
 
     @staticmethod
     def owner_emailaddr():
@@ -225,10 +224,10 @@ class AlarmSvc(StdService):
         # on_... sub-sections
         sect = alarm_sect.get('on_set', None)
         on_true_params = self.parse_on_sect(sect, defaults) \
-                         if sect is not None else defaults
+                         if sect is not None else None
         sect = alarm_sect.get('on_clear', None)
         on_false_params = self.parse_on_sect(sect, defaults) \
-                          if sect is not None else defaults
+                          if sect is not None else None
 
         return Alarm(name, rule, on_true_params, on_false_params, mailer)
 
