@@ -29,14 +29,12 @@ class AlarmSvc(StdService):
 
     * an alarm condition is when the specified rule (a python expression that
       includes one or more data_types, converted into specifed unit_system)
-      evaluates to true
-    * transitioning from true to false or vice versa triggers the alarm
+      evaluates to true. while true, the alarm is 'set', otherwise 'clear'
+    * transitioning from 'clear' to 'set' or vice versa triggers the alarm
       to perform the associated action
       (the only actions defined are to send emails to a distribution list)
-    * remaining either true or false without transition does NOT trigger
-    * the trigger is re-armed when the alarm condition is no longer met,
-      so it can fire again at next transition
-    * alarms are only assessed in report cycle (at each ARCHIVE packet)
+    * remaining either 'clear' or 'set' without transition does NOT trigger
+    * alarms are only assessed at each report cycle (i.e. each ARCHIVE packet)
 
     weewx.conf configuration parameters:
     [Alarms]
