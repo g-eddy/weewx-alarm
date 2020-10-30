@@ -17,10 +17,10 @@ import threading
 import weewx
 import weewx.units
 from weewx.engine import StdService
-from weeutil.weeutil import timestamp_to_string, to_int
+from weeutil.weeutil import timestamp_to_string, to_bool
 
 log = logging.getLogger(__name__)
-version = "4.0.2b"
+version = "4.0.3"
 
 
 class AlarmSvc(StdService):
@@ -48,6 +48,8 @@ class AlarmSvc(StdService):
                         (default: none)
         text_set        value representing SET state (default: "SET")
         text_clear      value representing CLEAR state (default: "CLR")
+        suppress_first  suppress notification of first detection of state?
+                        (default: true)
         subject         default notification email subject line, as a format
                         string evaluated in the context of the packet
                         converted to the specified unit system - it supports
@@ -80,6 +82,8 @@ class AlarmSvc(StdService):
                 recipients  overrides default {recipients} if present
                 text_set    overrides default {text_set} if present
                 text_clear  overrides default {text_clear} if present
+                suppress_first
+                            overrides default {suppress_first} if present
                 subject     overrides default {subject} if present
                 subject_prefix
                             overrides default {subject_prefix} if present
@@ -90,6 +94,9 @@ class AlarmSvc(StdService):
             # on transition from true to false
             [[[on_clear]]]
                 recipients
+                text_set
+                text_clear
+                suppress_first
                 subject
                 subject_prefix
                 body
@@ -103,6 +110,9 @@ class AlarmSvc(StdService):
         #password = ignored
         sender = "Wx Name <your_account@your_isp.au>"
         recipients = "Your Name <your_account@your_isp.com>", "Foo <bar@isp.com>"
+        #text_set = "SET"
+        #text_clear = "CLR"
+        #suppress_first = true
         #subject = "{_NAME}"
         #subject_prefix = "Alarm [{_STATE}] "
         subject_prefix = "!{_STATE}! "
@@ -121,6 +131,7 @@ class AlarmSvc(StdService):
         [[Freezing]]
             rule = "outTemp <= 0.0"     # 0 C
             [[[on_set]]]
+                suppress_first = false
                 subject_prefix = ""
                 subject = "Brrrr! {_NAME}"
                 body = "outTemp:\t{outTemp}\n"
@@ -166,6 +177,7 @@ class AlarmSvc(StdService):
         key='recipients'; on_defaults[key] = mgr_sect.get(key, list())
         key='text_set'; on_defaults[key] = mgr_sect.get(key, "SET")
         key='text_clear'; on_defaults[key] = mgr_sect.get(key, "CLR")
+        key='suppress_first'; on_defaults[key] = to_bool(mgr_sect.get(key, True))
         key='subject_prefix'; on_defaults[key] = mgr_sect.get(key,
                                     r"Alarm [{_STATE}] ")
         key='subject'; on_defaults[key] = mgr_sect.get(key, r"{_NAME}")
@@ -232,9 +244,16 @@ class AlarmSvc(StdService):
     def parse_on_sect(self, on_sect, on_defaults):
         """parse an on_ sub-section in alarm definition"""
 
+        # construct raw param dict
         params = {}
         for key in on_defaults:
             params[key] = on_sect[key] if key in on_sect else on_defaults[key]
+
+        # correct params for syntax
+        for key in ['suppress_first']:  # booleans
+            if key in params:
+                params[key] = to_bool(params[key])
+
         return params
 
     def new_archive_record(self, event):
@@ -329,24 +348,33 @@ class Alarm:
             log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
                       f" context={context}")
 
-        # evaluate rule
+        # evaluate rule to get new state
         new_state = self.eval_rule(context)
+        if weewx.debug > 2:
+            log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
+                      f" state={self.state}->{new_state}")
         if new_state is None:
-            return
+            return      # no new state
 
         # have we changed state?
-        params = None
-        if self.state is not None and new_state != self.state:
-            # yes -> triggered. but which way?
-            params = self.on_true_params if new_state else self.on_false_params
+        old_state = self.state
+        if new_state == old_state:
+            return      # no state change
         self.state = new_state
 
-        # do we have work to do?
+        # get trigger parameters for new state
+        params = self.on_true_params if new_state else self.on_false_params
         if weewx.debug > 1:
             log.debug(f"{self.__class__.__name__}.assess [{self.name}]"
                       f" params={params}")
         if not params:
-            return          # finished - no email
+            return      # no trigger defined
+
+        # is this the first time we have state?
+        if old_state is None:
+            # first state. suppress notification of first state?
+            if params['suppress_first']:
+                return  # suppress notification of first state
 
         # start assembling the notification
         context['_STATE'] = params['text_set'] if new_state else \
