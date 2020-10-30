@@ -1,6 +1,6 @@
 <h1>weewx-alarm</h1>
 <p>service that detects and responds to alarm conditions</p>
-<p>status: not yet released</p>
+<p>status: released</p>
 
 * an alarm condition is when the specified rule (a python expression that
   includes one or more data_types, converted into specifed unit_system)
