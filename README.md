@@ -24,6 +24,8 @@
                     (default: none)
     text_set        value representing SET state (default: "SET")
     text_clear      value representing CLEAR state (default: "CLR")
+    suppress_first  suppress notification of first detection of state?
+                    (default: true)
     subject         default notification email subject line, as a format
                     string evaluated in the context of the packet
                     converted to the specified unit system - it supports
@@ -56,6 +58,8 @@
             recipients  overrides default {recipients} if present
             text_set    overrides default {text_set} if present
             text_clear  overrides default {text_clear} if present
+            suppress_first
+                        overrides default {suppress_first} if present
             subject     overrides default {subject} if present
             subject_prefix
                         overrides default {subject_prefix} if present
@@ -66,6 +70,9 @@
         # on transition from true to false
         [[[on_clear]]]
             recipients
+            text_set
+            text_clear
+            suppress_first
             subject
             subject_prefix
             body
@@ -83,6 +90,7 @@
     #password = ignored
     sender = "Wx Name <your_account@your_isp.au>"
     recipients = "Your Name <your_account@your_isp.com>", "Foo <bar@isp.com>"
+    #suppress_first = true
     #subject = "{_NAME}"
     #subject_prefix = "Alarm [{_STATE}] "
     subject_prefix = "!{_STATE}! "
@@ -101,6 +109,7 @@
     [[Freezing]]
         rule = "outTemp <= 0.0"     # 0 C
         [[[on_set]]]
+            suppress_first = false
             subject_prefix = ""
             subject = "Brrrr! {_NAME}"
             body = "outTemp:\t{outTemp}\n"
