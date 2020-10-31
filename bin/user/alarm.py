@@ -1,4 +1,4 @@
-# ©2017-2020 Graham Eddy <graham.eddy@gmail.com>
+# Copyright (c) 2017-2020 Graham Eddy <graham.eddy@gmail.com>
 # Distributed under the terms of weewx's GNU Public License (GPLv3)
 """
 alarm module provides weewx service that detects and acts upon alarm conditions
@@ -20,7 +20,7 @@ from weewx.engine import StdService
 from weeutil.weeutil import timestamp_to_string, to_bool
 
 log = logging.getLogger(__name__)
-version = "4.0.3"
+version = "4.0.4"
 
 
 class AlarmSvc(StdService):
@@ -48,8 +48,9 @@ class AlarmSvc(StdService):
                         (default: none)
         text_set        value representing SET state (default: "SET")
         text_clear      value representing CLEAR state (default: "CLR")
-        suppress_first  suppress notification of first detection of state?
-                        (default: true)
+        notify_first    on startup, notify of first state detected if that
+                        state is listed here i.e. 'clear', 'set', 'clear,set'
+                        or none (default: none)
         subject         default notification email subject line, as a format
                         string evaluated in the context of the packet
                         converted to the specified unit system - it supports
@@ -83,7 +84,7 @@ class AlarmSvc(StdService):
                 text_set    overrides default {text_set} if present
                 text_clear  overrides default {text_clear} if present
                 suppress_first
-                            overrides default {suppress_first} if present
+                            overrides default {notify_first} if present (bool)
                 subject     overrides default {subject} if present
                 subject_prefix
                             overrides default {subject_prefix} if present
@@ -112,7 +113,7 @@ class AlarmSvc(StdService):
         recipients = "Your Name <your_account@your_isp.com>", "Foo <bar@isp.com>"
         #text_set = "SET"
         #text_clear = "CLR"
-        #suppress_first = true
+        notify_first = set
         #subject = "{_NAME}"
         #subject_prefix = "Alarm [{_STATE}] "
         subject_prefix = "!{_STATE}! "
@@ -131,7 +132,7 @@ class AlarmSvc(StdService):
         [[Freezing]]
             rule = "outTemp <= 0.0"     # 0 C
             [[[on_set]]]
-                suppress_first = false
+                suppress_first = true
                 subject_prefix = ""
                 subject = "Brrrr! {_NAME}"
                 body = "outTemp:\t{outTemp}\n"
@@ -177,7 +178,7 @@ class AlarmSvc(StdService):
         key='recipients'; on_defaults[key] = mgr_sect.get(key, list())
         key='text_set'; on_defaults[key] = mgr_sect.get(key, "SET")
         key='text_clear'; on_defaults[key] = mgr_sect.get(key, "CLR")
-        key='suppress_first'; on_defaults[key] = to_bool(mgr_sect.get(key, True))
+        key='notify_first'; on_defaults[key] = mgr_sect.get(key, '').lower()
         key='subject_prefix'; on_defaults[key] = mgr_sect.get(key,
                                     r"Alarm [{_STATE}] ")
         key='subject'; on_defaults[key] = mgr_sect.get(key, r"{_NAME}")
@@ -233,15 +234,15 @@ class AlarmSvc(StdService):
 
         # on_... sub-sections
         sect = alarm_sect.get('on_set', None)
-        on_true_params = self.parse_on_sect(sect, defaults) \
+        on_true_params = self.parse_on_sect(sect, defaults, 'set') \
                          if sect is not None else None
         sect = alarm_sect.get('on_clear', None)
-        on_false_params = self.parse_on_sect(sect, defaults) \
+        on_false_params = self.parse_on_sect(sect, defaults, 'clear') \
                           if sect is not None else None
 
         return Alarm(name, rule, on_true_params, on_false_params, mailer)
 
-    def parse_on_sect(self, on_sect, on_defaults):
+    def parse_on_sect(self, on_sect, on_defaults, on_state):
         """parse an on_ sub-section in alarm definition"""
 
         # construct raw param dict
@@ -249,10 +250,20 @@ class AlarmSvc(StdService):
         for key in on_defaults:
             params[key] = on_sect[key] if key in on_sect else on_defaults[key]
 
-        # correct params for syntax
-        for key in ['suppress_first']:  # booleans
-            if key in params:
-                params[key] = to_bool(params[key])
+        # transform global 'notify_first' list to local 'suppress_first' bool
+        if 'suppress_first' in on_sect:
+            # take local declaration
+            try:
+                params['suppress_first'] = to_bool(on_sect['suppress_first'])
+            except ValueError:
+                log.warning(f"{__class__.__name__}: invalid bool"
+                             " suppress_first=\'{params['suppress_first']}\'"
+                             " assumed False")
+                params['suppress_first'] = False
+        else:
+            # take (reverse of) global opposite declaration
+            params['suppress_first'] = on_state not in on_defaults['notify_first']
+        del params['notify_first']  # remove extraneous parameter
 
         return params
 
